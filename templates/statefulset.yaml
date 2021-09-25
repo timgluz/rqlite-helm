@@ -1,0 +1,96 @@
+{{- $fullName := include "rqlite-helm.fullname" . -}}
+{{- $dbPort := .Values.rqlite.ports.db -}}
+{{- $raftPort := .Values.rqlite.ports.raft -}}
+
+apiVersion: "apps/v1"
+kind: StatefulSet
+metadata:
+  name: "{{ $fullName }}"
+  labels:
+    {{- include "rqlite-helm.labels" . | nindent 4 }}
+spec:
+  serviceName: "{{ $fullName }}"
+  replicas: {{ .Values.replicaCount | int }}
+  selector:
+    matchLabels:
+      {{- include "rqlite-helm.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "rqlite-helm.labels" . | nindent 8 }}
+    spec:
+      terminationGracePeriodSeconds: 1800
+      securityContext: {{ .Values.podSecurityContext | toYaml | nindent 8 }}
+      containers:
+        - name: rqlite
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: "{{ .Values.image.pullPolicy }}"
+          resources: {{ .Values.resources | toYaml | nindent 12 }}
+          env:
+            - name: RQLITE_DB_PORT
+              value: {{ $dbPort | quote }}
+            - name: RQLITE_RAFT_PORT
+              value: {{ $raftPort | quote }}
+            - name: RQLITE_NODE_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: RQLITE_SERVICE_HOST
+              value: "{{ $fullName }}"
+            - name: RQLITE_DB_PATH
+              value: {{ .Values.rqlite.dataPath | quote }}
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+          command:
+            - bash
+            - '-c'
+            - |
+              set -ex
+              declare -a params
+              params=( '-node-id' "$(RQLITE_NODE_ID)" )
+              params+=( '-http-addr' "0.0.0.0:$(RQLITE_DB_PORT)" )
+              params+=( '-http-adv-addr' "$(POD_IP):$(RQLITE_DB_PORT)" )
+              params+=( '-raft-addr' "0.0.0.0:$(RQLITE_RAFT_PORT)" )
+              params+=( '-raft-adv-addr' "$(POD_IP):$(RQLITE_RAFT_PORT)" )
+              replica_id=$(echo "$RQLITE_NODE_ID" | grep -o -h -m 1 -Pe '(?<=\-)(\d+)$')
+              # if follower node
+              if [[ "$replica_id" -gt 0 ]] ; then
+                echo "Adding join param for the follower node"
+                params+=('-join' "$(RQLITE_SERVICE_HOST):$(RQLITE_DB_PORT)")
+              fi
+              echo "starting rqlited with params ${params[@]}"
+              rqlited ${params[@]} $(RQLITE_DB_PATH)
+          securityContext: {{ .Values.securityContext | toYaml | nindent 12 }}
+          ports:
+          - containerPort: {{ $dbPort }}
+            name: db-port
+          - containerPort: {{ $raftPort }}
+            name: raft-port
+          volumeMounts:
+            - name: db-data
+              mountPath: {{ .Values.rqlite.dataPath | quote }}
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: {{ $dbPort }}
+            initialDelaySeconds: 3
+            periodSeconds: 3
+          livenessProbe:
+            httpGet:
+              path: /status
+              port: {{ $dbPort }}
+            failureThreshold: 3
+            periodSeconds: 10
+          lifecycle:
+            preStop:
+              exec:
+                command:
+                  - /bin/sh
+                  - -c
+                  - curl -XDELETE "$RQLITE_SERVICE_HOST:$RQLITE_PORT" -d "{\"id\":\"$RQLITE_NODE_ID\"}"
+      volumes:
+        - name: db-data
+          emptyDir: {}
+

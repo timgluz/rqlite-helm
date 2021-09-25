@@ -1,0 +1,24 @@
+{{- $fullName := include "rqlite-helm.fullname" . -}}
+{{- $svcPort := .Values.service.port -}}
+{{- $dbPort := .Values.rqlite.ports.db -}}
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $fullName }}
+  labels:
+    {{- include "rqlite-helm.labels" . | nindent 4 }}
+  {{- with .Values.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.service.type }}
+  clusterIP: None
+  ports:
+    - port: {{ $svcPort }}
+      targetPort: {{ $dbPort }}
+      protocol: TCP
+      name: http
+  selector:
+    {{- include "rqlite-helm.selectorLabels" . | nindent 4 }}
